@@ -9,4 +9,7 @@ After installing the needed R packages as well, you can being working with the `
 - Name of the metadata column where celltypes are stored: `col_celltype`
 - Celltype of interested (that will be subset to): `ct`
 - Boolean (TRUE/FALSE) filter value on whether or not to filter genes based on expression and frequency (if TRUE, will remove genes based upon various thresholds): `filter`
+- Minimum average expression for a gene (Default 0.2): `min_exp`
+- Minumum number of cells a gene must be expressed in (Default 40): `min_cells`
+- Minumum percent of cells a gene must be expressed in (Default 0.2): `min_perc`
 - List of genes the calculate correlations between: `corr_genes_all`
