@@ -1,0 +1,483 @@
+---
+title: "Correlation workflow"
+author: "Noor Sohail"
+output:
+   html_document:
+      code_folding: hide
+      df_print: paged
+      highlights: pygments
+      number_sections: true
+      self_contained: true
+      theme: default
+      toc: true
+      toc_float:
+         collapsed: true
+         smooth_scroll: true
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+# Turn off Warnings and other console output messages from the whole document
+```
+
+```{r, cache=FALSE, message=FALSE}
+library(tidyverse)
+library(knitr)
+library(glue)
+library(Seurat)
+library(pheatmap)
+library(devtools)
+library(gridExtra)
+
+library(CSCORE)
+library(WGCNA)
+library(SAVER)
+
+ggplot2::theme_set(theme_light(base_size = 11))
+opts_chunk[["set"]](
+    cache = FALSE,
+    dev = c("png", "pdf"),
+    error = TRUE,
+    highlight = TRUE,
+    message = FALSE,
+    prompt = FALSE,
+    tidy = FALSE,
+    warning = FALSE)
+```
+
+# User define values
+
+```{r}
+path_seurat <- "../data/seurat.RDS"
+path_outs <- "05.0_workflow"
+
+col_sample <- "sample"
+col_celltype <- "celltype"
+ct <- "B cells"
+
+# Filtration parameters
+filter <- TRUE
+min_exp <- 0.2
+min_cells <- 40
+# min_perc <- 0.2
+min_perc <- 0.5
+```
+
+- Path seurat: `r path_seurat`
+- Metadata column with celltypes: `r col_celltype`
+- Celltype to subset to: `r ct`
+- Filter genes based on expression and frequency: `r filter`
+
+List of all genes:
+```{r}
+# Fill in the list of genes you are interested in calculating correlations for
+corr_genes_all <- c()
+
+corr_genes_all <- read.csv("../data/surfaceome_genes.csv")$x
+as.data.frame(corr_genes_all)
+```
+
+Starting off with `r length(corr_genes_all)` genes of interest.
+
+# Load seurat object
+
+```{r}
+# Manual addition
+load(bzfile("../data/seurat_integrated.RData.bz2"))
+
+seurat <- seurat_integrated
+DefaultAssay(seurat) <- "RNA"
+seurat[["SCT"]] <- NULL
+seurat[["integrated"]] <- NULL
+
+rm(seurat_integrated)
+
+Idents(object = seurat) <- "integrated_snn_res.0.8"
+seurat <- RenameIdents(object = seurat, 
+                               "0" = "Naive or memory CD4+ T cells",
+                               "1" = "CD14+ monocytes",
+                               "2" = "Activated T cells",
+                               "3" = "CD14+ monocytes",
+                               "4" = "Stressed cells / Unknown",
+                               "5" = "CD8+ T cells",
+                               "6" = "Naive or memory CD4+ T cells",
+                               "7" = "B cells",
+                               "8" = "NK cells",
+                               "9" = "CD8+ T cells",
+                               "10" = "FCGR3A+ monocytes",
+                               "11" = "B cells",
+                               "12" = "NK cells",
+                               "13" = "B cells",
+                               "14" = "Conventional dendritic cells",
+                               "15" = "Megakaryocytes",
+			       "16" = "Plasmacytoid dendritic cells")
+seurat$celltype <- Idents(seurat)
+
+DefaultAssay(seurat) <- "RNA"
+```
+
+```{r}
+# library(SeuratDisk)
+# seurat <- readRDS(path_seurat)
+
+# Saving celltype information as column named celltype
+# In order to use subset function later
+seurat$celltype <- seurat@meta.data[col_celltype]
+```
+
+
+```{r}
+Idents(seurat) <- col_celltype
+DimPlot(seurat) + ggtitle("Celltypes")
+```
+
+```{r}
+seurat@meta.data %>%
+        ggplot() +
+        geom_bar(aes(
+            x = get(col_celltype),
+            fill = get(col_celltype)),
+            stat = "count", color = "black") +
+        theme_classic() +
+        NoLegend() +
+        xlab("Celltype") +
+        ylab("Number of Cells") +
+        ggtitle("Celltypes") +
+        theme(plot.title = element_text(hjust = 0.5)) +
+        geom_text(aes(x = get(col_celltype), label = after_stat(count)), stat = "count", vjust = -0.5) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Subset to `r ct` cells
+
+```{r}
+seurat <- subset(seurat, celltype == ct)
+
+# Removing genes that have 0 counts across all cells of the celltype
+raw_rna <- GetAssayData(object =  seurat[['RNA']], layer = 'counts')
+genes.use <- rowSums(raw_rna) > 0
+genes.use <- names(genes.use[genes.use])
+seurat <- seurat[genes.use, ]
+
+n_cells <- ncol(seurat)
+```
+
+Working with `r n_cells` cells.
+
+```{r}
+seurat@meta.data %>%
+        ggplot() +
+        geom_bar(aes(
+            x = get(col_sample),
+            fill = get(col_sample)),
+            stat = "count", color = "black") +
+        theme_classic() +
+        NoLegend() +
+        ggtitle(glue("{ct} cells: Sample distribution")) +
+        ylab("Number of Cells") +
+        xlab("Sample") +
+        theme(plot.title = element_text(hjust = 0.5)) +
+        geom_text(aes(x = get(col_sample), label = after_stat(count)), stat = "count", vjust = -0.5) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Subset genes of interest
+
+From the genes that were supplied, removing any that are not expressed in this dataset.
+
+```{r}
+corr_genes <- corr_genes_all[corr_genes_all %in% genes.use]
+as.data.frame(corr_genes)
+```
+
+Next we look at the basic distribution of remaining genes of interest in terms of expression and number of cells they are expressed in.
+
+These are the following filtration metrics that are set:
+
+- Average expression < `r min_exp`
+- Number of cells expressed in > `r min_cells`
+- Percentage of cells expressed in > `r min_perc`
+
+Filtration parameter was set to `r filter`. If FALSE, no further filtration will be done at this step.
+
+```{r}
+data_rna <- FetchData(seurat[["RNA"]], vars = corr_genes)
+
+# Number of cells a gene is expressed in
+num_cells <- colSums(data_rna > 0)
+# Percentage of cells a gene is expressed in
+perc_cells <- num_cells / ncol(seurat)
+# Average expression of a gene
+avg_expression <- colMeans(data_rna)
+
+df_genes <- data.frame(num_cells, perc_cells, avg_expression)
+df_genes <- df_genes %>% mutate(filter = !((perc_cells > min_perc) & (num_cells > min_cells) & (avg_expression > min_exp)))
+df_genes$gene <- row.names(df_genes)
+df_genes <- df_genes %>% arrange(desc(avg_expression), desc(perc_cells))
+
+df_genes
+```
+
+```{r}
+df_genes %>% ggplot() +
+    geom_point(aes(x = perc_cells, y = avg_expression, color = filter)) +
+    theme_classic()
+```
+
+```{r}
+if (filter == TRUE) {
+    corr_genes <- (df_genes %>% subset(filter == FALSE))$gene
+}
+```
+
+`r length(corr_genes)` genes of interest remaining.
+
+# Imputation and normalization
+
+We compare three alternative methods of estimating expression levels to log normalization and assess their ability to account for dropout.
+
+1. SCTransform (raw counts -> normalized counts)
+2. MAGIC (raw counts -> imputed, normalized counts)
+3. SAVER (raw counts -> imputed, normalized counts)
+
+```{r}
+# Get raw counts
+raw_rna <- LayerData(seurat, assay = "RNA", layer = "counts")
+
+# LOG NORMALIZATION
+data_rna <- LayerData(seurat, assay = "RNA", layer = "data")
+
+# SCT
+# Re-run SCT on subset data
+seurat <- SCTransform(seurat, return.only.var.genes = FALSE, min_cells = 1)
+data_sct <-  LayerData(seurat, assay = "SCT", layer = "data")
+
+# MAGIC
+# Load conda environment
+# myenvs <- reticulate::conda_list()
+envname <- "merck"
+reticulate::use_condaenv(envname, required = TRUE)
+library(Rmagic)
+data_magic <- magic(t(raw_rna), genes = corr_genes)$result
+data_magic <- t(data_magic)
+
+# SAVER
+# Generate SAVER predictions for those genes
+genes.ind <- which(rownames(raw_rna) %in% corr_genes)
+data_saver <- saver(raw_rna, pred.genes = genes.ind, pred.genes.only = TRUE, estimates.only = TRUE, ncores = 8)
+```
+
+```{r}
+# Store output so we don't have to re-run previous step each time
+filename <- glue("{path_outs}/data_list.RDS")
+
+# Put all matrices in a list for easy access
+data_list <- list(data_rna, data_sct, data_magic, data_saver)
+names(data_list) <- c("rna", "sct", "magic", "saver")
+# saveRDS(data_list, filename)
+
+# data_list <- readRDS(filename)
+```
+
+## Average expression for each method
+
+```{r}
+df_avg <- data.frame(gene = corr_genes)
+for (method in names(data_list)) {
+    data <- data_list[[method]]
+    avg <- data.frame(rowMeans(data))
+    colnames(avg) <- method
+    avg$gene <- row.names(avg)
+
+   df_avg <-  left_join(df_avg, avg, by = "gene")
+}
+
+pheatmap(df_avg %>% column_to_rownames(var = "gene"), scale = "column",
+            cluster_col = TRUE, cluster_row = TRUE, show_rownames = FALSE)
+```
+
+# Correlation Estimates
+
+We have a few different ways to compute correlation scores with their associated p-values:
+
+1. Spearman correlation 
+  - SCTransform counts -> spearman correlation matrix
+  - MAGIC imputed -> spearman correlation matrix
+  - SAVER imputed -> spearman correlation matrix
+2. CS-CORE 
+    - Raw RNA counts -> co-expression matrix
+
+```{r}
+# Compute spearman correlation for each method (except CS-CORE which is run later)
+# Unique combination of each gene pair
+genes_comb <- data.frame(t(combn(corr_genes, 2)))
+n_comb <- nrow(genes_comb)
+methods <- c("rna", "sct", "magic", "saver")
+
+# Create dataframe with correlation and p-values scores
+df_corr <- genes_comb %>% rename("Var1" = X1, "Var2" = X2)
+df_corr[methods] <- NA
+df_p_val <- genes_comb %>% rename("Var1" = X1, "Var2" = X2)
+df_p_val[methods] <- NA
+
+for (idx in 1:n_comb) {
+
+    if (idx %% 200 == 0) {
+        print(glue("{idx}/{n_comb} correlations computed."))
+    }
+
+    # Name of genes to run correlation on
+    gene_1 <- genes_comb[idx, 1]
+    gene_2 <- genes_comb[idx, 2]
+
+    for (method in methods) {
+        gene_1_exp <- data_list[[method]][gene_1, ]
+        gene_2_exp <- data_list[[method]][gene_2, ]
+
+        if (all(gene_1_exp == 0) | all(gene_2_exp == 0)) {
+            # If a gene has no expression, set correlation = 0 and p-value = 1
+            corr_val <- 0.0
+            p_val <- 1.0
+        } else {
+            # Calculate spearman correlation and p-value otherwise
+            tmp <- cor.test(gene_1_exp, gene_2_exp, method = "spearman", exact = FALSE)
+            corr_val <- as.numeric(unname(tmp$estimate))
+            p_val <- as.numeric(tmp$p.value)
+        }
+
+        # Store correlation and p-values
+        df_corr[idx, method] <- corr_val
+        df_p_val[idx, method] <- p_val
+    }
+}
+
+# Run CS-CORE
+CSCORE_result <- CSCORE(seurat, genes = corr_genes)
+
+# Store CS-CORE results
+tmp <- reshape2::melt(as.matrix(CSCORE_result$est)) %>% rename(cscore = value)
+df_corr <- left_join(df_corr, tmp)
+tmp <- reshape2::melt(as.matrix(CSCORE_result$p_value)) %>% rename(cscore = value)
+df_p_val <- left_join(df_p_val, tmp)
+```
+
+## Heatmap of correlation estimates
+
+Showing the patterns of correlation for each method. The x-axis and y-axis are the genes of interest with the corresponding correlation value for the pair as the value. Keep in mind that this is symmetric matrix.
+
+```{r results = "asis"}
+library(RColorBrewer)
+methods <- c("rna", "sct", "magic", "saver", "cscore")
+
+for (method in methods) {
+    corr <- df_corr[c("Var1", "Var2", method)]
+    corr_cp <- corr %>% rename(Var1 = Var2, Var2 = Var1)
+    corr <- rbind(corr, corr_cp)
+    mtx <- reshape2::dcast(corr, Var2 ~ Var1) %>% column_to_rownames("Var2")
+
+    # Set the diagonal values: Correlation = 1, p-value = 1
+    mtx <- as.matrix(mtx)
+    diag(mtx) <- 1
+
+    breaks <-  seq(-1, 1, by = 0.1)
+    color <- colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(length(breaks))
+
+
+    p <- pheatmap(mtx, show_rownames = FALSE, show_colnames = FALSE,
+                color = color, breaks = breaks, silent = FALSE, main = method)
+    knit_print(p)
+}
+```
+
+# Compare correlation estimates across methods
+
+Comparing the correlation scores for each gene pair for MAGIC, SAVER, and CS-CORE.
+
+In these scatterplots, the gene-pairs that are colored red have different results for significance.
+
+```{r fig.width=15}
+methods <- c("magic", "saver", "cscore")
+methods_comb <- data.frame(t(combn(methods, 2)))
+plot_list <- list()
+
+for (idx in 1:nrow(methods_comb)) {
+    method_1 <- methods_comb[idx, 2]
+    method_2 <- methods_comb[idx, 1]
+
+    corr <- df_corr[c("Var1", "Var2", method_1, method_2)]
+    p_val <- df_p_val[c("Var1", "Var2", method_1, method_2)]
+    corr$sig_1 <- p_val[[method_1]]
+    corr$sig_2 <- p_val[[method_2]]
+
+    corr <- corr %>% mutate(sig = (sig_1 < 0.5) & (sig_2 < 0.05))
+
+    p <- ggplot(corr) +
+            geom_point(aes(x = get(method_1), y = get(method_2), color = sig)) +
+            theme_classic() +
+            NoLegend() +
+            scale_color_manual(values = c("FALSE" = "red", "TRUE" = "black")) +
+            labs(x = method_1, y = method_2, title = paste(method_1, "vs", method_2)) +
+            theme(plot.title = element_text(size=rel(2))) +
+            ylim(-1, 1) + xlim(-1, 1) +
+            geom_abline(slope = 1, intercept = 0, color = "blue")
+
+    plot_list[[idx]] <- ggplotGrob(p)
+
+}
+
+grid.arrange(grobs = plot_list, ncol = 3)
+```
+
+# SAVER and CS-CORE results
+
+Based upon previous results, the results from CS-CORE and SAVER tend to agree with one another which is what we will use to generate the final list of gene pairs.
+
+To make the most informed decision about which gene pairs to use, the final dataframe includes the following information:
+
+- Gene1 and Gene2 (`Var1` and `Var2`)
+- SAVER spearman correlation score (`saver`) and p-value (`p_saver`)
+- CS-CORE correlation estimate (`cscore`) and p-value (`p_cscore`)
+- Average expression for each gene in the pair after SAVER imputation (`Var1_avg` and `Var2_avg`)
+- Ratio of average expression (gene 1 average / gene 2 average) (`avg_ratio`)
+- Percent cells that express both genes before imputation (`perc_both`) to assess dropout
+
+```{r}
+df_results <- df_corr %>% select(Var1, Var2, saver, cscore)
+
+# Including symmetric values
+# This will make it easier to see which genes have large differences in average expression
+corr_cp <- df_results %>% rename(Var1 = Var2, Var2 = Var1)
+df_results <- rbind(df_results, corr_cp)
+
+# Adding p-values for CS-CORE and SAVER
+p_corr <- df_p_val %>% select(Var1, Var2, saver, cscore)
+colnames(p_corr) <- c("Var1", "Var2", "p_saver", "p_cscore")
+p_corr_cp <- p_corr %>% rename(Var1 = Var2, Var2 = Var1)
+p_corr <- rbind(p_corr, p_corr_cp)
+df_results <- merge(df_results, p_corr)
+
+# Add average SAVER imputed values for each gene
+idx <- match(df_results$Var1, df_avg$gene)
+df_results$Var1_avg <- df_avg[idx, "saver"]
+idx <- match(df_results$Var2, df_avg$gene)
+df_results$Var2_avg <- df_avg[idx, "saver"]
+
+# Ratio of average expression values
+df_results <- df_results %>% mutate(avg_ratio = Var1_avg / Var2_avg)
+
+data <- as.data.frame(t(data_list[["rna"]]))
+df_results$perc_both <- NA
+# Percent of cells that express both genes
+for (idx in 1:nrow(df_results)) {
+    gene_1 <- df_results[idx, "Var1"]
+    gene_2 <- df_results[idx, "Var2"]
+
+    data_sub <- data[c(gene_1, gene_2)]
+    colnames(data_sub) <- c("Var1", "Var2")
+    data_sub <- data_sub %>% subset(!(Var1 == 0) & !(Var2 == 0))
+    df_results[idx, "perc_both"] <- nrow(data_sub) / n_cells
+}
+
+df_results
+```
+
