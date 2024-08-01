@@ -48,19 +48,18 @@ opts_chunk[["set"]](
 # User define values
 
 ```{r}
-path_seurat <- "../data/seurat.RDS"
-path_outs <- "05.0_workflow"
+path_seurat <- "/path/to/seurat.RDS"
+path_outs <- "/path/to/results/directory/"
 
-col_sample <- "sample"
-col_celltype <- "celltype"
-ct <- "B cells"
+col_sample <- ""
+col_celltype <- ""
+ct <- ""
 
 # Filtration parameters
 filter <- TRUE
 min_exp <- 0.2
 min_cells <- 40
-# min_perc <- 0.2
-min_perc <- 0.5
+min_perc <- 0.2
 ```
 
 - Path seurat: `r path_seurat`
@@ -72,8 +71,6 @@ List of all genes:
 ```{r}
 # Fill in the list of genes you are interested in calculating correlations for
 corr_genes_all <- c()
-
-corr_genes_all <- read.csv("../data/surfaceome_genes.csv")$x
 as.data.frame(corr_genes_all)
 ```
 
@@ -82,43 +79,7 @@ Starting off with `r length(corr_genes_all)` genes of interest.
 # Load seurat object
 
 ```{r}
-# Manual addition
-load(bzfile("../data/seurat_integrated.RData.bz2"))
-
-seurat <- seurat_integrated
-DefaultAssay(seurat) <- "RNA"
-seurat[["SCT"]] <- NULL
-seurat[["integrated"]] <- NULL
-
-rm(seurat_integrated)
-
-Idents(object = seurat) <- "integrated_snn_res.0.8"
-seurat <- RenameIdents(object = seurat, 
-                               "0" = "Naive or memory CD4+ T cells",
-                               "1" = "CD14+ monocytes",
-                               "2" = "Activated T cells",
-                               "3" = "CD14+ monocytes",
-                               "4" = "Stressed cells / Unknown",
-                               "5" = "CD8+ T cells",
-                               "6" = "Naive or memory CD4+ T cells",
-                               "7" = "B cells",
-                               "8" = "NK cells",
-                               "9" = "CD8+ T cells",
-                               "10" = "FCGR3A+ monocytes",
-                               "11" = "B cells",
-                               "12" = "NK cells",
-                               "13" = "B cells",
-                               "14" = "Conventional dendritic cells",
-                               "15" = "Megakaryocytes",
-			       "16" = "Plasmacytoid dendritic cells")
-seurat$celltype <- Idents(seurat)
-
-DefaultAssay(seurat) <- "RNA"
-```
-
-```{r}
-# library(SeuratDisk)
-# seurat <- readRDS(path_seurat)
+seurat <- readRDS(path_seurat)
 
 # Saving celltype information as column named celltype
 # In order to use subset function later
@@ -255,7 +216,7 @@ data_sct <-  LayerData(seurat, assay = "SCT", layer = "data")
 # MAGIC
 # Load conda environment
 # myenvs <- reticulate::conda_list()
-envname <- "merck"
+envname <- "scrna_corr"
 reticulate::use_condaenv(envname, required = TRUE)
 library(Rmagic)
 data_magic <- magic(t(raw_rna), genes = corr_genes)$result
