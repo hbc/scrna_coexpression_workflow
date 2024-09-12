@@ -3,8 +3,13 @@
 In order to run the correlation workflow, `reticulate` needs to be used as MAGIC is a python based tool. In order to recreate a conda environments that is compatible with running the workflow, you can create a new conda environment with `requirements.txt` file included in this repository. The following code can be used to create said  environment:
 
 ```bash
-conda create -n scrna_corr R=4.3.2
-conda install --file requirements.txt
+conda create -n scrna_corr
+
+git clone git://github.com/KrishnaswamyLab/MAGIC.git
+cd MAGIC/python
+python setup.py install --user
+cd ../Rmagic
+R CMD INSTALL .
 ```
 
 # User supplied inputs
