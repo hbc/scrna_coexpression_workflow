@@ -4,6 +4,7 @@ In order to run the correlation workflow, `reticulate` needs to be used as MAGIC
 
 ```bash
 conda create -n scrna_corr
+module load scrna_corr
 
 git clone git://github.com/KrishnaswamyLab/MAGIC.git
 cd MAGIC/python
