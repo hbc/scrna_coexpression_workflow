@@ -53,10 +53,10 @@ opts_chunk[["set"]](
 # User define values
 
 ```{r}
-path_seurat <- "../seurat_fibroclust.rds"
+path_seurat <- "/path/to/seurat.RDS"
 path_outs <- "../output/"
 
-## add column names for the sample id and the celltype column. ct is the cluster/celltype that you want to focus on.
+## add column names for the sample id and the celltype column. ct is the cluster/celltype that you want to focus on. Replace with your information that match seurat object.
 col_sample <- "orig.ident"
 col_celltype <- "SCT_snn_res.0.25"
 ct <- "2"
