@@ -20,6 +20,11 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 # Turn off Warnings and other console output messages from the whole document
 ```
 
+```{r}
+library(reticulate)
+use_virtualenv("magic2")
+```
+
 ```{r, cache=FALSE, message=FALSE}
 library(tidyverse)
 library(knitr)
@@ -48,12 +53,13 @@ opts_chunk[["set"]](
 # User define values
 
 ```{r}
-path_seurat <- "/path/to/seurat.RDS"
-path_outs <- "/path/to/results/directory/"
+path_seurat <- "../seurat_fibroclust.rds"
+path_outs <- "../output/"
 
-col_sample <- ""
-col_celltype <- ""
-ct <- ""
+## add column names for the sample id and the celltype column. ct is the cluster/celltype that you want to focus on.
+col_sample <- "orig.ident"
+col_celltype <- "SCT_snn_res.0.25"
+ct <- "2"
 
 # Filtration parameters
 filter <- TRUE
@@ -70,7 +76,7 @@ min_perc <- 0.2
 List of all genes:
 ```{r}
 # Fill in the list of genes you are interested in calculating correlations for
-corr_genes_all <- c()
+corr_genes_all <- c("Col1a1","Col1a2","Dcn","Ly6c1","Ly6a", "Ebf2","Il33","Prx")
 as.data.frame(corr_genes_all)
 ```
 
@@ -112,21 +118,24 @@ seurat@meta.data %>%
 # Subset to `r ct` cells
 
 ```{r}
-seurat <- subset(seurat, celltype == ct)
+seurat2 <- subset(seurat, celltype == ct)
+
+## Set default assay to RNA, downstream code fails if it is on SCT. Remove SCT as well
+DefaultAssay(object = seurat_imputed) <- "MAGIC"
+seurat2[['SCT']] <- NULL # to make sure it doesn't fail downstream due to new version of Seurat
 
 # Removing genes that have 0 counts across all cells of the celltype
-raw_rna <- GetAssayData(object =  seurat[['RNA']], layer = 'counts')
+raw_rna <- GetAssayData(object =  seurat2[['RNA']], layer = 'counts')
 genes.use <- rowSums(raw_rna) > 0
 genes.use <- names(genes.use[genes.use])
-seurat <- seurat[genes.use, ]
-
-n_cells <- ncol(seurat)
+seurat2 <- seurat2[genes.use, ]
+n_cells <- ncol(seurat2)
 ```
 
 Working with `r n_cells` cells.
 
 ```{r}
-seurat@meta.data %>%
+seurat2@meta.data %>%
         ggplot() +
         geom_bar(aes(
             x = get(col_sample),
@@ -162,12 +171,12 @@ These are the following filtration metrics that are set:
 Filtration parameter was set to `r filter`. If FALSE, no further filtration will be done at this step.
 
 ```{r}
-data_rna <- FetchData(seurat[["RNA"]], vars = corr_genes)
+data_rna <- FetchData(seurat2[["RNA"]], vars = corr_genes)
 
 # Number of cells a gene is expressed in
 num_cells <- colSums(data_rna > 0)
 # Percentage of cells a gene is expressed in
-perc_cells <- num_cells / ncol(seurat)
+perc_cells <- num_cells / ncol(seurat2)
 # Average expression of a gene
 avg_expression <- colMeans(data_rna)
 
@@ -207,16 +216,16 @@ filename <- glue("{path_outs}/imputed_{ct}.RDS")
 
 if (!file.exists(filename)) {
     # Get raw counts
-    raw_rna <- LayerData(seurat, assay = "RNA", layer = "counts")
+    raw_rna <- LayerData(seurat2, assay = "RNA", layer = "counts")
 
     # SCT
     # Re-run SCT on subset data
-    seurat <- SCTransform(seurat, return.only.var.genes = FALSE, min_cells = 1)
+    seurat <- SCTransform(seurat2, return.only.var.genes = FALSE, min_cells = 1)
 
     # Creating new seurat object for genes of interest only
-    data_raw <-  FetchData(seurat, assay="RNA", layer="counts", vars=corr_genes)
-    data_rna <-  FetchData(seurat, assay="RNA", layer="data", vars=corr_genes)
-    data_sct <-  FetchData(seurat, assay="SCT", layer="data", vars=corr_genes)
+    data_raw <-  FetchData(seurat2, assay="RNA", layer="counts", vars=corr_genes)
+    data_rna <-  FetchData(seurat2, assay="RNA", layer="data", vars=corr_genes)
+    data_sct <-  FetchData(seurat2, assay="SCT", layer="data", vars=corr_genes)
 
     seurat_imputed <- CreateSeuratObject(counts=t(data_raw), data=t(data_rna), meta.data=seurat@meta.data)
     seurat_imputed[["SCT"]] <- CreateAssayObject(data=t(data_sct))
@@ -226,10 +235,10 @@ if (!file.exists(filename)) {
     rm(seurat)
 
     # MAGIC
+    
     # Load conda environment
     # myenvs <- reticulate::conda_list()
-    envname <- "merck"
-    reticulate::use_condaenv(envname, required = TRUE)
+    reticulate::use_virtualenv("magic2",required = T)
     library(Rmagic)
     data_magic <- magic(t(raw_rna), genes = corr_genes)$result
     seurat_imputed[["MAGIC"]] <- CreateAssayObject(data=t(data_magic))
@@ -377,7 +386,7 @@ Comparing the correlation scores for each gene pair for MAGIC, SAVER, and CS-COR
 In these scatterplots, the gene-pairs that are colored red have different results for significance.
 
 ```{r fig.width=15}
-methods <- c("magic", "saver", "cscore")
+methods <- c("MAGIC", "SAVER", "CSCORE")
 methods_comb <- data.frame(t(combn(methods, 2)))
 plot_list <- list()
 
@@ -386,7 +395,7 @@ for (idx in 1:nrow(methods_comb)) {
     method_2 <- methods_comb[idx, 1]
 
     corr <- df_corr[c("Var1", "Var2", method_1, method_2)]
-    p_val <- df_p_val[c("Var1", "Var2", method_1, method_2)]
+    p_val <- df_p_val[,c("Var1", "Var2", method_1, method_2)]
     corr$sig_1 <- p_val[[method_1]]
     corr$sig_2 <- p_val[[method_2]]
 
@@ -407,4 +416,5 @@ for (idx in 1:nrow(methods_comb)) {
 }
 
 grid.arrange(grobs = plot_list, ncol = 3)
+
 ```
