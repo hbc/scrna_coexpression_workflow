@@ -2,7 +2,6 @@
 
 Make sure you are in the folder with the code:
 
-- `analyze_correlation_results.Rmd`
 - `correlation_workflow.Rmd`
 
 # R environment
